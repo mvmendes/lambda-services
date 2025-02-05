@@ -26,8 +26,8 @@ Before getting started, ensure you have:
 ### AWS CLI Setup 🔧
 
 #### Required IAM Permissions
-Before running `aws configure`, ensure your IAM user has the following minimum permissions:
 
+1. **Deployment User Policy** (for AWS CLI deployment):
 ```json
 {
     "Version": "2012-10-17",
@@ -44,23 +44,32 @@ Before running `aws configure`, ensure your IAM user has the following minimum p
                 "lambda:DeleteFunction",
                 "lambda:GetFunction",
                 "lambda:InvokeFunction",
+                "lambda:CreateFunctionUrlConfig",
+                "lambda:AddPermission",
                 "logs:CreateLogGroup",
                 "logs:CreateLogStream",
                 "logs:PutLogEvents",
                 "s3:PutObject",
                 "s3:GetObject",
-                "s3:ListBucket"
+                "s3:ListBucket",
+                "apigateway:*",
+                "cloudwatch:*",
+                "codebuild:*",
+                "applicationinsights:*"
             ],
             "Resource": [
                 "arn:aws:lambda:*:*:function:ScrapeService*",
                 "arn:aws:logs:*:*:log-group:/aws/lambda/ScrapeService*",
-                "arn:aws:s3:::your-deployment-bucket/*"
+                "arn:aws:s3:::inovationai-lambda-services-bucket/*"
             ]
         },
         {
             "Effect": "Allow",
             "Action": [
-                "iam:PassRole"
+                "iam:PassRole",
+                "iam:CreateRole",
+                "iam:GetRole",
+                "iam:AttachRolePolicy"
             ],
             "Resource": "arn:aws:iam::*:role/lambda-scrape-service-role"
         }
@@ -68,12 +77,31 @@ Before running `aws configure`, ensure your IAM user has the following minimum p
 }
 ```
 
-You can create this policy in IAM console and attach it to your user:
-1. Go to IAM Console
-2. Create new policy with the JSON above
-3. Attach policy to your deployment user
+2. **Lambda Execution Role Policy** (automatically attached to Lambda function):
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Resource": [
+                "arn:aws:logs:*:*:log-group:/aws/lambda/ScrapeService*"
+            ]
+        }
+    ]
+}
+```
 
-> **Note**: Replace `your-deployment-bucket` with your actual S3 bucket name used for deployments.
+You can create these policies in IAM console:
+1. Go to IAM Console
+2. Create new policies with the JSON above
+3. For the deployment user policy, attach it to your deployment user
+4. The Lambda execution policy will be automatically attached to the Lambda role during deployment
 
 #### AWS Profile Configuration
 The `AWS_PROFILE` refers to a named profile in your AWS credentials file. Here's how to set it up:
@@ -273,6 +301,130 @@ Example GitHub Actions workflow:
     chmod +x build_and_deploy.sh
     ./build_and_deploy.sh
 ```
+
+### Deployment Scripts
+
+#### Linux/MacOS (build_and_deploy.sh)
+```bash
+# Make script executable
+chmod +x build_and_deploy.sh
+# Run deployment
+./build_and_deploy.sh
+```
+
+#### Windows (build_and_deploy.ps1)
+```powershell
+# Create new file build_and_deploy.ps1
+$SERVICE_NAME = "scrape-service"
+$LAMBDA_ZIP = "scrape-lambda.zip"
+
+# Configurable variables with env fallback
+$AWS_PROFILE = if ($env:AWS_PROFILE) { $env:AWS_PROFILE } else { "default" }
+$AWS_REGION = if ($env:AWS_REGION) { $env:AWS_REGION } else { "us-east-1" }
+$LAMBDA_FUNCTION = if ($env:LAMBDA_FUNCTION) { $env:LAMBDA_FUNCTION } else { "ScrapeService" }
+$LAMBDA_ROLE = if ($env:LAMBDA_ROLE) { $env:LAMBDA_ROLE } else { "lambda-scrape-service-role" }
+
+# Install dependencies
+pip install -r requirements.txt -t ./package
+
+# Package
+if (!(Test-Path -Path "package")) {
+    New-Item -ItemType Directory -Path "package"
+}
+Push-Location package
+Compress-Archive -Path * -DestinationPath "../$LAMBDA_ZIP" -Force
+Pop-Location
+Compress-Archive -Path src/scrape_lambda.py -Update -DestinationPath $LAMBDA_ZIP
+
+# Check if Lambda function exists
+$functionExists = $false
+try {
+    aws lambda get-function --function-name $LAMBDA_FUNCTION --region $AWS_REGION --profile $AWS_PROFILE | Out-Null
+    $functionExists = $true
+} catch {
+    Write-Host "Lambda function does not exist. Creating new function..."
+}
+
+if ($functionExists) {
+    # Update existing function
+    Write-Host "Updating existing Lambda function..."
+    aws lambda update-function-code `
+        --function-name $LAMBDA_FUNCTION `
+        --zip-file fileb://$LAMBDA_ZIP `
+        --region $AWS_REGION `
+        --profile $AWS_PROFILE
+} else {
+    # Create IAM role if it doesn't exist
+    $roleArn = ""
+    try {
+        $roleArn = (aws iam get-role --role-name $LAMBDA_ROLE --query 'Role.Arn' --output text --profile $AWS_PROFILE)
+    } catch {
+        Write-Host "Creating IAM role..."
+        $trustPolicy = @{
+            Version = "2012-10-17"
+            Statement = @(
+                @{
+                    Effect = "Allow"
+                    Principal = @{
+                        Service = "lambda.amazonaws.com"
+                    }
+                    Action = "sts:AssumeRole"
+                }
+            )
+        } | ConvertTo-Json -Depth 10
+
+        $roleArn = (aws iam create-role `
+            --role-name $LAMBDA_ROLE `
+            --assume-role-policy-document $trustPolicy `
+            --profile $AWS_PROFILE `
+            --query 'Role.Arn' `
+            --output text)
+
+        # Attach basic Lambda execution policy
+        aws iam attach-role-policy `
+            --role-name $LAMBDA_ROLE `
+            --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole `
+            --profile $AWS_PROFILE
+
+        # Wait for role to propagate
+        Start-Sleep -Seconds 10
+    }
+
+    # Create new Lambda function
+    Write-Host "Creating new Lambda function..."
+    aws lambda create-function `
+        --function-name $LAMBDA_FUNCTION `
+        --runtime python3.12 `
+        --handler src.scrape_lambda.lambda_handler `
+        --role $roleArn `
+        --zip-file fileb://$LAMBDA_ZIP `
+        --region $AWS_REGION `
+        --profile $AWS_PROFILE `
+        --timeout 30 `
+        --memory-size 512
+}
+
+Write-Host "Deployment completed successfully!"
+
+# Optional: For container deployment
+<# 
+docker build -t $SERVICE_NAME .
+aws ecr create-repository --repository-name $SERVICE_NAME --image-scanning-configuration scanOnPush=true --image-tag-mutability MUTABLE
+docker tag ${SERVICE_NAME}:latest <account-id>.dkr.ecr.${AWS_REGION}.amazonaws.com/${SERVICE_NAME}:latest
+docker push <account-id>.dkr.ecr.${AWS_REGION}.amazonaws.com/${SERVICE_NAME}:latest 
+#>
+```
+
+To run the Windows deployment script:
+```powershell
+# Allow script execution (if not already enabled)
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Run deployment script
+.\build_and_deploy.ps1
+```
+
+> **Note**: Make sure to run PowerShell as Administrator if you encounter permission issues.
 
 ## Configuration Management ⚙️
 
