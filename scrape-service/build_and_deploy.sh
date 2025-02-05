@@ -35,27 +35,34 @@ echo -e "${CYAN}=====================${NC}\n"
 
 echo -e "${GREEN}Starting deployment process...${NC}"
 
-# Install dependencies
-echo "Installing dependencies..."
-mkdir -p package
-pip install -r requirements.txt -t ./package || handle_error "Failed to install dependencies"
-
 # Package
 echo "Creating deployment package..."
-(cd package && zip -r ../${LAMBDA_ZIP} .) || handle_error "Failed to create package zip"
-zip -g ${LAMBDA_ZIP} src/scrape_lambda.py || handle_error "Failed to add lambda handler to zip"
+try {
+    # Ensure package directory exists and is empty
+    if [ -d "package" ]; then
+        rm -rf package/*
+    else
+        mkdir -p package
+    fi
+
+    # Install dependencies
+    pip install -r requirements.txt -t ./package || handle_error "Failed to install dependencies"
+
+    # Copy source files to package
+    mkdir -p package/src
+    cp -r src/* package/src/ || handle_error "Failed to copy source files"
+
+    # Create ZIP file
+    (cd package && zip -r ../${LAMBDA_ZIP} .) || handle_error "Failed to create package zip"
+} catch {
+    handle_error "Failed to create deployment package"
+}
 
 # Check if Lambda function exists
 echo "Checking if Lambda function exists..."
-function_exists=false
 if aws lambda get-function --function-name ${LAMBDA_FUNCTION} --region ${AWS_REGION} --profile ${AWS_PROFILE} >/dev/null 2>&1; then
-    function_exists=true
     echo -e "${GREEN}Lambda function found.${NC}"
-else
-    echo -e "${YELLOW}Lambda function does not exist. Will create new function.${NC}"
-fi
-
-if [ "$function_exists" = true ]; then
+    
     # Update existing function
     echo "Updating existing Lambda function..."
     update_result=$(aws lambda update-function-code \
@@ -70,61 +77,59 @@ if [ "$function_exists" = true ]; then
         echo -e "${GREEN}Lambda function updated successfully!${NC}"
     fi
 else
-    # Create IAM role if it doesn't exist
+    echo -e "${YELLOW}Lambda function does not exist. Will create new function.${NC}"
+    
+    # Check/Create IAM role
     echo "Checking IAM role..."
-    role_arn=""
-    if role_response=$(aws iam get-role --role-name ${LAMBDA_ROLE} --profile ${AWS_PROFILE} --query 'Role.Arn' --output text 2>&1); then
-        role_arn=$role_response
+    if role_arn=$(aws iam get-role --role-name ${LAMBDA_ROLE} --profile ${AWS_PROFILE} --query 'Role.Arn' --output text 2>/dev/null); then
         echo -e "${GREEN}Using existing IAM role: $role_arn${NC}"
     else
         echo -e "${YELLOW}Creating new IAM role...${NC}"
-        trust_policy=$(cat <<EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Principal": {
-                "Service": "lambda.amazonaws.com"
-            },
-            "Action": "sts:AssumeRole"
-        }
-    ]
-}
-EOF
-)
+        trust_policy='{
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "lambda.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+            }]
+        }'
         
-        role_result=$(aws iam create-role \
+        role_arn=$(aws iam create-role \
             --role-name ${LAMBDA_ROLE} \
             --assume-role-policy-document "$trust_policy" \
             --profile ${AWS_PROFILE} \
             --query 'Role.Arn' \
-            --output text 2>&1)
+            --output text)
         
         if [ $? -ne 0 ]; then
-            handle_error "Failed to create IAM role: $role_result"
+            handle_error "Failed to create IAM role"
         fi
-        role_arn=$role_result
-
-        attach_result=$(aws iam attach-role-policy \
+        
+        echo -e "${GREEN}IAM role created successfully.${NC}"
+        
+        # Attach Lambda execution policy
+        echo "Attaching Lambda execution policy..."
+        aws iam attach-role-policy \
             --role-name ${LAMBDA_ROLE} \
             --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole \
-            --profile ${AWS_PROFILE} 2>&1)
+            --profile ${AWS_PROFILE}
         
         if [ $? -ne 0 ]; then
-            handle_error "Failed to attach role policy: $attach_result"
+            handle_error "Failed to attach role policy"
         fi
-
-        echo -e "${GREEN}IAM role created successfully. Waiting for propagation...${NC}"
+        
+        echo -e "${YELLOW}Waiting for IAM role propagation...${NC}"
         sleep 10
     fi
-
-    # Create new Lambda function
+    
+    # Create Lambda function
     echo "Creating new Lambda function..."
     create_result=$(aws lambda create-function \
         --function-name ${LAMBDA_FUNCTION} \
         --runtime python3.12 \
-        --handler src.scrape_lambda.lambda_handler \
+        --handler scrape_lambda.lambda_handler \
         --role ${role_arn} \
         --zip-file fileb://${LAMBDA_ZIP} \
         --region ${AWS_REGION} \
@@ -134,8 +139,44 @@ EOF
     
     if [ $? -ne 0 ]; then
         handle_error "Failed to create Lambda function: $create_result"
+    fi
+    echo -e "${GREEN}Lambda function created successfully!${NC}"
+    
+    # Configure Function URL
+    echo "Configuring Lambda Function URL..."
+    url_config=$(aws lambda create-function-url-config \
+        --function-name ${LAMBDA_FUNCTION} \
+        --auth-type NONE \
+        --cors '{
+            "AllowOrigins": ["*"],
+            "AllowMethods": ["POST"],
+            "AllowHeaders": ["*"],
+            "ExposeHeaders": ["*"],
+            "MaxAge": 86400
+        }' \
+        --region ${AWS_REGION} \
+        --profile ${AWS_PROFILE} 2>&1)
+    
+    if [ $? -eq 0 ]; then
+        function_url=$(echo "$url_config" | grep -o '"FunctionUrl": "[^"]*' | cut -d'"' -f4)
+        echo -e "${GREEN}Function URL created: $function_url${NC}"
     else
-        echo -e "${GREEN}Lambda function created successfully!${NC}"
+        echo -e "${YELLOW}Warning: Failed to create function URL: $url_config${NC}"
+    fi
+    
+    # Add Function URL permissions
+    echo "Adding Function URL permissions..."
+    permission_result=$(aws lambda add-permission \
+        --function-name ${LAMBDA_FUNCTION} \
+        --statement-id FunctionURLAllowPublicAccess \
+        --action lambda:InvokeFunctionUrl \
+        --principal "*" \
+        --function-url-auth-type NONE \
+        --region ${AWS_REGION} \
+        --profile ${AWS_PROFILE} 2>&1)
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}Warning: Failed to add URL permissions: $permission_result${NC}"
     fi
 fi
 
