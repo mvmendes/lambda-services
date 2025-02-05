@@ -3,5 +3,6 @@
 *.zip
 *.zip   
 venv/
+venv-win/
 package/
 .specstory/*

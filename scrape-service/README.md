@@ -23,6 +23,181 @@ Before getting started, ensure you have:
 - Docker installed (optional for container deployment) 🐳
 - Node.js (for optional monitoring setup) ⚙️
 
+### AWS CLI Setup 🔧
+
+#### Required IAM Permissions
+Before running `aws configure`, ensure your IAM user has the following minimum permissions:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "lambda:CreateFunction",
+                "lambda:UpdateFunctionCode",
+                "lambda:UpdateFunctionConfiguration",
+                "lambda:PublishVersion",
+                "lambda:CreateAlias",
+                "lambda:UpdateAlias",
+                "lambda:DeleteFunction",
+                "lambda:GetFunction",
+                "lambda:InvokeFunction",
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents",
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:lambda:*:*:function:ScrapeService*",
+                "arn:aws:logs:*:*:log-group:/aws/lambda/ScrapeService*",
+                "arn:aws:s3:::your-deployment-bucket/*"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "iam:PassRole"
+            ],
+            "Resource": "arn:aws:iam::*:role/lambda-scrape-service-role"
+        }
+    ]
+}
+```
+
+You can create this policy in IAM console and attach it to your user:
+1. Go to IAM Console
+2. Create new policy with the JSON above
+3. Attach policy to your deployment user
+
+> **Note**: Replace `your-deployment-bucket` with your actual S3 bucket name used for deployments.
+
+#### AWS Profile Configuration
+The `AWS_PROFILE` refers to a named profile in your AWS credentials file. Here's how to set it up:
+
+1. After running `aws configure`, your credentials are stored in:
+   - Windows: `%UserProfile%\.aws\credentials`
+   - Linux/MacOS: `~/.aws\credentials`
+
+2. The credentials file looks like this:
+```ini
+[default]
+aws_access_key_id = YOUR_ACCESS_KEY
+aws_secret_access_key = YOUR_SECRET_KEY
+region = us-east-1
+
+[development]
+aws_access_key_id = ANOTHER_ACCESS_KEY
+aws_secret_access_key = ANOTHER_SECRET_KEY
+region = us-east-1
+```
+
+3. You can create multiple profiles using:
+```bash
+# Create a new named profile
+aws configure --profile development
+```
+
+4. Then use the profile name in your configuration:
+```bash
+# Linux/MacOS
+export AWS_PROFILE="development"
+
+# Windows PowerShell
+$env:AWS_PROFILE="development"
+```
+
+> **Note**: If you only have one AWS account, you can use `"default"` as your profile name or omit the AWS_PROFILE setting entirely.
+
+#### Linux/MacOS
+```bash
+# Install AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
+# Configure AWS CLI
+aws configure
+# You will be prompted for:
+# AWS Access Key ID: [Your access key]
+# AWS Secret Access Key: [Your secret key]
+# Default region name: [Your region, e.g., us-east-1]
+# Default output format: [json]
+```
+
+#### Windows
+```powershell
+# Install AWS CLI using MSI installer
+# Download from: https://awscli.amazonaws.com/AWSCLIV2.msi
+# Or using winget:
+winget install -e --id Amazon.AWSCLI
+
+# Configure AWS CLI (PowerShell or Command Prompt)
+aws configure
+# You will be prompted for:
+# AWS Access Key ID: [Your access key]
+# AWS Secret Access Key: [Your secret key]
+# Default region name: [Your region, e.g., us-east-1]
+# Default output format: [json]
+```
+
+## Installation 🛠️
+
+### Linux/MacOS Setup
+```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Windows Setup
+```powershell
+# Create virtual environment
+python -m venv venv-win
+
+# Activate virtual environment (PowerShell)
+.\venv-win\Scripts\Activate.ps1
+# OR (Command Prompt)
+.\venv-win\Scripts\activate.bat
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Environment Variables Setup
+
+#### Linux/MacOS
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export AWS_PROFILE="your-profile"
+export AWS_REGION="us-east-1"
+export LAMBDA_FUNCTION="ScrapeService"
+export LOG_LEVEL="INFO"
+```
+
+#### Windows
+```powershell
+# Using PowerShell (User level)
+[System.Environment]::SetEnvironmentVariable('AWS_PROFILE', 'your-profile', 'User')
+[System.Environment]::SetEnvironmentVariable('AWS_REGION', 'us-east-1', 'User')
+[System.Environment]::SetEnvironmentVariable('LAMBDA_FUNCTION', 'ScrapeService', 'User')
+[System.Environment]::SetEnvironmentVariable('LOG_LEVEL', 'INFO', 'User')
+
+# OR using Command Prompt
+setx AWS_PROFILE "your-profile"
+setx AWS_REGION "us-east-1"
+setx LAMBDA_FUNCTION "ScrapeService"
+setx LOG_LEVEL "INFO"
+```
+
 ## Configuration ⚙️
 ### Environment Variables 🌟
 Set your environment variables appropriately:
@@ -34,16 +209,6 @@ export AWS_REGION="us-east-1"      # AWS region
 # Optional
 export LAMBDA_FUNCTION="ScrapeService" # Default function name
 export LOG_LEVEL="INFO"            # DEBUG/INFO/WARNING/ERROR
-```
-
-## Installation 🛠️
-Follow these steps to install dependencies and configure AWS credentials:
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure AWS credentials
-aws configure
 ```
 
 ## Deployment 🚀
@@ -213,6 +378,14 @@ Common issues and remedies:
    - AmazonAPIGatewayInvokeFullAccess
 4. **Invalid URL Format 🌐**  
    Ensure URLs include the protocol (http:// or https://)
+5. **Virtual Environment Issues 🔧**
+   - Windows: If unable to activate venv, run `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` in PowerShell
+   - Linux: If permission denied, run `chmod +x venv/bin/activate`
+6. **AWS CLI Configuration Issues ⚙️**
+   - Verify credentials file location:
+     - Windows: `%UserProfile%\.aws\credentials`
+     - Linux/MacOS: `~/.aws/credentials`
+   - Check AWS CLI installation: `aws --version`
 
 ## CI/CD Pipeline 🤖
 Automate your deployments with GitHub Actions. Example workflow (`.github/workflows/deploy.yml`):
