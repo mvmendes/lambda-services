@@ -599,4 +599,92 @@ aws logs tail /aws/lambda/$LAMBDA_FUNCTION \
   --profile $AWS_PROFILE
 ```
 
+## 🌟 Features
+- ✅ HTTP requests with redirect handling
+- ✅ HTML parsing with BeautifulSoup
+- ✅ Markdown conversion with link preservation
+- ✅ Image extraction with absolute URLs
+- ✅ Custom HTTP methods support
+- ✅ Custom headers support
+- ✅ Multiple response formats
+
+## 📝 API Reference
+
+### Endpoint
+```
+POST https://<function-url>/scrape
+```
+
+### Request Body
+```json
+{
+  "url": "https://example.com",
+  "format": "json|html|text|proxy",  // Optional, defaults to "html"
+  "method": "GET|POST|PUT|...",     // Optional, defaults to "GET"
+  "headers": [                       // Optional, custom request headers
+    {"header-name": "value"},
+    {"another-header": "value"}
+  ]
+}
+```
+
+### Parameters
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `url` | string | **Required**. URL to scrape |
+| `format` | string | Response format. Options: `json`, `html`, `text`, `proxy`. Default: `html` |
+| `method` | string | HTTP method for the request. Default: `GET` |
+| `headers` | array | Array of header objects to be sent with the request |
+
+### Headers Format
+The `headers` parameter accepts an array of objects, where each object represents a header:
+```json
+{
+  "headers": [
+    {"x-api-key": "abc123"},
+    {"content-type": "application/json"},
+    {"custom-header": "value"}
+  ]
+}
+```
+
+### Response Formats
+
+#### JSON (format: "json")
+```json
+{
+  "title": "Page Title",
+  "markdown": "# Markdown content...",
+  "html": "<p>HTML content...</p>",
+  "images": ["https://..."],
+  "final_url": "https://..."
+}
+```
+
+### Example Requests
+
+#### Basic Request
+```json
+{
+  "url": "https://example.com"
+}
+```
+
+#### Request with Custom Headers
+```json
+{
+  "url": "https://api.example.com/data",
+  "method": "POST",
+  "headers": [
+    {"x-api-key": "abc123"},
+    {"content-type": "application/json"}
+  ],
+  "format": "json"
+}
+```
+
+## 🚀 Deployment
+
+### Prerequisites
+
 [Back to Main README](../README.md)

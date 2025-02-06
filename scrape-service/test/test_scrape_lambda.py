@@ -21,6 +21,39 @@ def test_lambda_handler_valid_url(valid_event):
     assert 'html' in body
     assert 'final_url' in body
 
+def test_lambda_handler_with_custom_headers():
+    event = {
+        'body': json.dumps({
+            'url': 'https://example.com',
+            'headers': [
+                {'x-channel-id': 'WEB'},
+                {'x-ecomm-name': 'test-store'}
+            ]
+        })
+    }
+    response = lambda_handler(event, None)
+    assert response['statusCode'] == 200
+
+def test_lambda_handler_with_custom_method():
+    event = {
+        'body': json.dumps({
+            'url': 'https://example.com',
+            'method': 'POST'
+        })
+    }
+    response = lambda_handler(event, None)
+    assert response['statusCode'] == 200
+
+def test_lambda_handler_invalid_headers():
+    event = {
+        'body': json.dumps({
+            'url': 'https://example.com',
+            'headers': 'invalid'  # Deve ser um array
+        })
+    }
+    response = lambda_handler(event, None)
+    assert response['statusCode'] == 400
+
 def test_lambda_handler_missing_url():
     event = {'body': '{}'}
     response = lambda_handler(event, None)

@@ -99,6 +99,7 @@ def lambda_handler(event, context):
         body = json.loads(event.get('body', '{}'))
         original_url = body.get('url')
         format_type = body.get('format', 'html').lower()  # Formato padrão: html
+        method = body.get('method', 'GET').upper()  # Método padrão: GET
         
         # Validação da URL
         if not original_url:
@@ -111,9 +112,21 @@ def lambda_handler(event, context):
         if not original_url.startswith(('http://', 'https://')):
             original_url = f'https://{original_url}'
 
+        # Processamento dos headers customizados
+        custom_headers = {}
+        if 'headers' in body:
+            try:
+                for header in body['headers']:
+                    custom_headers.update(header)
+            except Exception as header_err:
+                return {
+                    'statusCode': 400,
+                    'body': json.dumps({'error': f"Formato inválido para headers: {str(header_err)}"})
+                }
+
         # Requisição HTTP
         with httpx.Client(follow_redirects=True) as client:
-            response = client.get(original_url, timeout=10.0)
+            response = client.request(method, original_url, headers=custom_headers, timeout=10.0)
             final_url = str(response.url)
             html_content = response.text
 
