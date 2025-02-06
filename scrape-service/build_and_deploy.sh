@@ -35,34 +35,36 @@ echo -e "${CYAN}=====================${NC}\n"
 
 echo -e "${GREEN}Starting deployment process...${NC}"
 
-# Package
-echo "Creating deployment package..."
-try {
-    # Ensure package directory exists and is empty
-    if [ -d "package" ]; then
-        rm -rf package/*
-    else
-        mkdir -p package
-    fi
-
-    # Install dependencies
-    pip install -r requirements.txt -t ./package || handle_error "Failed to install dependencies"
-
-    # Copy source files to package
-    mkdir -p package/src
-    cp -r src/* package/src/ || handle_error "Failed to copy source files"
-
-    # Create ZIP file
-    (cd package && zip -r ../${LAMBDA_ZIP} .) || handle_error "Failed to create package zip"
-} catch {
-    handle_error "Failed to create deployment package"
-}
-
 # Check if Lambda function exists
+functionExists=false
 echo "Checking if Lambda function exists..."
 if aws lambda get-function --function-name ${LAMBDA_FUNCTION} --region ${AWS_REGION} --profile ${AWS_PROFILE} >/dev/null 2>&1; then
+    functionExists=true
     echo -e "${GREEN}Lambda function found.${NC}"
-    
+else
+    echo -e "${YELLOW}Lambda function does not exist. Will create new function.${NC}"
+fi
+
+# Package
+echo "Creating deployment package..."
+# Ensure package directory exists and is empty
+if [ -d "package" ]; then
+    rm -rf package/*
+else
+    mkdir -p package
+fi
+
+# Install dependencies
+pip install -r requirements.txt -t ./package || handle_error "Failed to install dependencies"
+
+# Copy source files to package
+mkdir -p package/src
+cp -r src/* package/src/ || handle_error "Failed to copy source files"
+
+# Create ZIP file
+(cd package && zip -r ../${LAMBDA_ZIP} .) || handle_error "Failed to create package zip"
+
+if [ "$functionExists" = true ]; then
     # Update existing function
     echo "Updating existing Lambda function..."
     update_result=$(aws lambda update-function-code \
@@ -129,7 +131,7 @@ else
     create_result=$(aws lambda create-function \
         --function-name ${LAMBDA_FUNCTION} \
         --runtime python3.12 \
-        --handler scrape_lambda.lambda_handler \
+        --handler src.scrape_lambda.lambda_handler \
         --role ${role_arn} \
         --zip-file fileb://${LAMBDA_ZIP} \
         --region ${AWS_REGION} \

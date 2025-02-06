@@ -98,7 +98,7 @@ def lambda_handler(event, context):
         # Parse do corpo da requisição
         body = json.loads(event.get('body', '{}'))
         original_url = body.get('url')
-        format_type = body.get('format', 'json').lower()  # Formato padrão: json
+        format_type = body.get('format', 'html').lower()  # Formato padrão: html
         
         # Validação da URL
         if not original_url:
@@ -116,6 +116,45 @@ def lambda_handler(event, context):
             response = client.get(original_url, timeout=10.0)
             final_url = str(response.url)
             html_content = response.text
+
+        # Se a resposta for JSON (content-type application/json), processa de forma diferenciada
+        ctype = response.headers.get("content-type", "").lower()
+        if "application/json" in ctype:
+            try:
+                data = response.json()
+                if format_type == 'json':
+                    return {
+                        'statusCode': 200,
+                        'headers': {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        },
+                        'body': json.dumps(data)
+                    }
+                else:
+                    pretty_json = json.dumps(data, indent=2, ensure_ascii=False)
+                    if format_type == 'html':
+                        html_body = f"<pre>{pretty_json}</pre>"
+                        return {
+                            'statusCode': 200,
+                            'headers': {
+                                'Content-Type': 'text/html',
+                                'Access-Control-Allow-Origin': '*'
+                            },
+                            'body': html_body
+                        }
+                    else:  # text
+                        return {
+                            'statusCode': 200,
+                            'headers': {
+                                'Content-Type': 'text/plain',
+                                'Access-Control-Allow-Origin': '*'
+                            },
+                            'body': pretty_json
+                        }
+            except Exception as json_err:
+                # Caso haja erro na conversão, prossegue com processamento normal
+                pass
 
         # Se for proxy, retorna o conteúdo original com headers
         if format_type == 'proxy':

@@ -33,7 +33,8 @@ try {
     # Ensure package directory exists and is empty
     if (Test-Path -Path "package") {
         Remove-Item -Path "package\*" -Recurse -Force
-    } else {
+    }
+    else {
         New-Item -ItemType Directory -Path "package"
     }
 
@@ -50,7 +51,8 @@ try {
     Push-Location package
     Compress-Archive -Path * -DestinationPath "../$LAMBDA_ZIP" -Force
     Pop-Location
-} catch {
+}
+catch {
     Handle-Error "Failed to create deployment package: $_"
 }
 
@@ -62,10 +64,12 @@ try {
     if ($LASTEXITCODE -eq 0) {
         $functionExists = $true
         Write-Host "Lambda function found." -ForegroundColor Green
-    } else {
+    }
+    else {
         Write-Host "Lambda function does not exist. Will create new function." -ForegroundColor Yellow
     }
-} catch {
+}
+catch {
     Write-Host "Lambda function does not exist. Will create new function." -ForegroundColor Yellow
 }
 
@@ -80,10 +84,12 @@ if ($functionExists) {
 
     if ($LASTEXITCODE -ne 0) {
         Handle-Error "Failed to update Lambda function: $updateResult"
-    } else {
+    }
+    else {
         Write-Host "Lambda function updated successfully!" -ForegroundColor Green
     }
-} else {
+}
+else {
     # Create IAM role if it doesn't exist
     Write-Host "Checking IAM role..."
     $roleArn = ""
@@ -91,10 +97,12 @@ if ($functionExists) {
         $roleArn = (aws iam get-role --role-name $LAMBDA_ROLE --query 'Role.Arn' --output text --profile $AWS_PROFILE 2>&1)
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Using existing IAM role: $roleArn" -ForegroundColor Green
-        } else {
+        }
+        else {
             throw "Role not found"
         }
-    } catch {
+    }
+    catch {
         Write-Host "Creating new IAM role..." -ForegroundColor Yellow
         $trustPolicy = @"
 {
@@ -116,14 +124,15 @@ if ($functionExists) {
             $roleArn = (aws iam get-role --role-name $LAMBDA_ROLE --query 'Role.Arn' --output text --profile $AWS_PROFILE 2>&1)
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "Found existing IAM role: $roleArn" -ForegroundColor Green
-            } else {
+            }
+            else {
                 # Try to create the role
                 $roleArn = (aws iam create-role `
-                    --role-name $LAMBDA_ROLE `
-                    --assume-role-policy-document "$trustPolicy" `
-                    --profile $AWS_PROFILE `
-                    --query 'Role.Arn' `
-                    --output text 2>&1)
+                        --role-name $LAMBDA_ROLE `
+                        --assume-role-policy-document "$trustPolicy" `
+                        --profile $AWS_PROFILE `
+                        --query 'Role.Arn' `
+                        --output text 2>&1)
 
                 if ($LASTEXITCODE -ne 0) {
                     if ($roleArn -like "*EntityAlreadyExists*") {
@@ -134,10 +143,12 @@ if ($functionExists) {
                             Handle-Error "Failed to get existing IAM role: $roleArn"
                         }
                         Write-Host "Using existing IAM role: $roleArn" -ForegroundColor Green
-                    } else {
+                    }
+                    else {
                         Handle-Error "Failed to create IAM role: $roleArn"
                     }
-                } else {
+                }
+                else {
                     Write-Host "IAM role created successfully." -ForegroundColor Green
                 }
             }
@@ -155,7 +166,8 @@ if ($functionExists) {
 
             Write-Host "Waiting for IAM role propagation..." -ForegroundColor Yellow
             Start-Sleep -Seconds 10
-        } catch {
+        }
+        catch {
             Handle-Error "Failed to manage IAM role: $_"
         }
     }
@@ -166,13 +178,14 @@ if ($functionExists) {
         $createResult = aws lambda create-function `
             --function-name $LAMBDA_FUNCTION `
             --runtime python3.12 `
-            --handler scrape_lambda.lambda_handler `
+            --handler src.scrape_lambda.lambda_handler `
             --role $roleArn `
             --zip-file fileb://$LAMBDA_ZIP `
             --region $AWS_REGION `
             --profile $AWS_PROFILE `
             --timeout 30 `
             --memory-size 512 2>&1
+
 
         if ($LASTEXITCODE -ne 0) {
             Handle-Error "Failed to create Lambda function: $createResult"
@@ -196,7 +209,8 @@ if ($functionExists) {
 
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Warning: Failed to create function URL: $urlConfig" -ForegroundColor Yellow
-        } else {
+        }
+        else {
             $functionUrl = ($urlConfig | ConvertFrom-Json).FunctionUrl
             Write-Host "Function URL created: $functionUrl" -ForegroundColor Green
         }
@@ -215,8 +229,8 @@ if ($functionExists) {
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Warning: Failed to add URL permissions: $permissionResult" -ForegroundColor Yellow
         }
-
-    } catch {
+    }
+    catch {
         Handle-Error "Failed to create Lambda function: $_"
     }
 }
