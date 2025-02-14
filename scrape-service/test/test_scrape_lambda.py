@@ -214,4 +214,71 @@ def test_lambda_handler_formats(format_type, expected_content_type):
     }
     response = lambda_handler(event, None)
     assert response['statusCode'] == 200
-    assert response['headers']['Content-Type'] == 'application/json' 
+    assert response['headers']['Content-Type'] == 'application/json'
+
+@respx.mock
+def test_duckduckgo_recursion():
+    # URL de consulta DuckDuckGo conforme fornecido
+    duckduckgo_url = "https://html.duckduckgo.com/html/?q=site:eurofarma.com.br+https://eurofarma.com.br/produtos/bulas/healthcare/pt+title:Azitromicina&ko-2&kaf=1&kae=t&kl=br-pt&k1=-1"
+
+    # Mock: resposta da consulta DuckDuckGo com dois links (um PDF e um DOCX)
+    respx.get(duckduckgo_url).mock(
+        return_value=httpx.Response(
+            200,
+            text=(
+                '<html><body>'
+                '<a href="document1.pdf">Document 1</a>'
+                '<a href="document2.docx">Document 2</a>'
+                '</body></html>'
+            )
+        )
+    )
+
+    # Considerando que o código utiliza urljoin, os links recursivos serão:
+    # "https://html.duckduckgo.com/html/document1.pdf" e "https://html.duckduckgo.com/html/document2.docx"
+    respx.get("https://html.duckduckgo.com/html/document1.pdf").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"%PDF-1.4\nDuckDuck PDF content",
+            headers={"Content-Type": "application/pdf"}
+        )
+    )
+    respx.get("https://html.duckduckgo.com/html/document2.docx").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"Test DOCX content",
+            headers={"Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+        )
+    )
+
+    # Monta o evento conforme o JSON informado
+    event = {
+        "body": json.dumps({
+            "url": duckduckgo_url,
+            "format": "markdown",
+            "method": "GET", 
+            "maxsize": 20000,
+            "max_level": 2,
+            "max_recursion_links": 10,
+            "link_exp_filter": "\\.(pdf|docx)$",
+            "images": False,
+            "headers": [
+                {"header-name": "value"},
+                {"another-header": "value"}
+            ]
+        })
+    }
+
+    response = lambda_handler(event, None)
+    assert response['statusCode'] == 200
+    body = json.loads(response['body'])
+
+    # Verifica se os links recursivos foram processados
+    links = body.get("links", {})
+    # Espera que o dicionário possua chaves que terminem com '.pdf' ou '.docx'
+    assert any(key.endswith(".pdf") for key in links.keys())
+    assert any(key.endswith(".docx") for key in links.keys())
+
+    # Opcional: verificar se o conteúdo dos links inclui parte da resposta mock (ex.: "duckduck")
+    contents = [v.get("content", "") for v in links.values() if isinstance(v, dict)]
+    assert any("duckduck" in content.lower() for content in contents) or any("test" in content.lower() for content in contents) 

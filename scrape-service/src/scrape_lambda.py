@@ -1,5 +1,6 @@
 import json
 import httpx
+import time  # Importado para implementar o rate limit
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import html2text
@@ -13,7 +14,7 @@ import csv
 from io import StringIO
 
 def process_html(html_content, final_url, maxsize=2000, level=0, max_level=0, processed_urls=None,
-                 max_recursion_links=None, link_exp_filter=None, current_recursion_count=None):
+                 max_recursion_links=None, link_exp_filter=None, current_recursion_count=None, format_type='html'):
     """
     Processa o HTML de forma recursiva até max_level
     processed_urls: conjunto de URLs já processadas para evitar loops
@@ -85,6 +86,8 @@ def process_html(html_content, final_url, maxsize=2000, level=0, max_level=0, pr
                         if max_recursion_links is None or current_recursion_count['count'] < max_recursion_links:
                             current_recursion_count['count'] += 1
                             try:
+                                # Aguarda conforme o rate limit antes de executar a requisição
+                                time.sleep(RATE_LIMIT_SECONDS)
                                 with httpx.Client(follow_redirects=True) as client:
                                     response = client.get(full_link, timeout=10.0)
                                     ctype = response.headers.get("content-type", "").lower()
@@ -99,7 +102,7 @@ def process_html(html_content, final_url, maxsize=2000, level=0, max_level=0, pr
                                         sub_title, sub_html, sub_images, sub_links = process_html(
                                             response.text, full_link, maxsize,
                                             level + 1, max_level, processed_urls,
-                                            max_recursion_links, link_exp_filter, current_recursion_count
+                                            max_recursion_links, link_exp_filter, current_recursion_count, format_type
                                         )
                                         if sub_title:  # se processamento foi bem sucedido
                                             links[full_link] = {
@@ -261,6 +264,14 @@ def lambda_handler(event, context):
 
         # Parse do corpo da requisição
         body = json.loads(event.get('body', '{}'))
+        # Se 'rate_limit' for informado nos parâmetros, atualiza o tempo de espera (em segundos)
+        if body.get("rate_limit") is not None:
+            try:
+                rate = float(body.get("rate_limit"))
+                global RATE_LIMIT_SECONDS
+                RATE_LIMIT_SECONDS = rate
+            except Exception as e:
+                pass
         return_headers = body.get('output_headers', False)
         original_url = body.get('url')
         format_type = body.get('format', 'metadata').lower()  # Formato padrão: metadata
@@ -339,7 +350,8 @@ def lambda_handler(event, context):
             html_content, final_url, maxsize_param,
             level=0, max_level=max_level,
             max_recursion_links=max_recursion_links,
-            link_exp_filter=link_exp_filter
+            link_exp_filter=link_exp_filter,
+            format_type=format_type
         )
         # Controle da extração de imagens a partir do parâmetro "images" na requisição (default: true)
         respond_images = body.get('images', True)
@@ -387,3 +399,6 @@ def lambda_handler(event, context):
             'headers': get_cors_headers(),
             'body': json.dumps({'error': str(e)})
         }
+
+# Define o tempo de espera (em segundos) entre as requisições da recursão para evitar bloqueios
+RATE_LIMIT_SECONDS = 0.5

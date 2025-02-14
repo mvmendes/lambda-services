@@ -1,0 +1,18 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug test_duckduckgo_recursion.py",
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}\\scrape-service",
+      "program": "${workspaceFolder}\\scrape-service\\venv-win\\Scripts\\pytest.exe", // ajuste o caminho para o seu executável do pytest
+      "args": ["private_tests/test_duckduckgo_recursion.py", "-v"],
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
