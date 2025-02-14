@@ -9,6 +9,9 @@ Repository for serverless microservices on AWS Lambda. Currently contains:
 - ✅ HTML parsing with BeautifulSoup
 - ✅ Markdown conversion with link preservation
 - ✅ Image extraction with absolute URLs
+- ✅ Recursive link processing with depth control
+- ✅ PDF, DOCX and XLSX file processing
+- ✅ Link filtering via regex patterns
 - ✅ Docker/ZIP deployment
 - ✅ Function URL support
 - ✅ Cross-platform deployment scripts (PowerShell/Bash)

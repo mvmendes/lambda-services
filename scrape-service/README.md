@@ -621,6 +621,11 @@ POST https://<function-url>/scrape
   "url": "https://example.com",
   "format": "json|html|text|proxy",  // Optional, defaults to "html"
   "method": "GET|POST|PUT|...",     // Optional, defaults to "GET"
+  "maxsize": 2000,                  // Optional, max size of summary text (default: 2000)
+  "max_level": 0,                   // Optional, recursion depth for links (default: 0)
+  "max_recursion_links": 10,        // Optional, max number of recursive links to process
+  "link_exp_filter": "\\.(pdf|docx)$", // Optional, regex to filter links
+  "images": true,                   // Optional, include images in response (default: true)
   "headers": [                       // Optional, custom request headers
     {"header-name": "value"},
     {"another-header": "value"}
@@ -634,6 +639,11 @@ POST https://<function-url>/scrape
 | `url` | string | **Required**. URL to scrape |
 | `format` | string | Response format. Options: `json`, `html`, `text`, `proxy`. Default: `html` |
 | `method` | string | HTTP method for the request. Default: `GET` |
+| `maxsize` | number | Maximum size of summary text. Default: 2000 |
+| `max_level` | number | Recursion depth for link processing. Default: 0 (no recursion) |
+| `max_recursion_links` | number | Maximum number of links to process recursively |
+| `link_exp_filter` | string | Regular expression to filter which links to process |
+| `images` | boolean | Whether to include images in response. Default: true |
 | `headers` | array | Array of header objects to be sent with the request |
 
 ### Headers Format
@@ -657,6 +667,7 @@ The `headers` parameter accepts an array of objects, where each object represent
   "markdown": "# Markdown content...",
   "html": "<p>HTML content...</p>",
   "images": ["https://..."],
+  "links": ["https://..."],
   "final_url": "https://..."
 }
 ```
@@ -667,6 +678,17 @@ The `headers` parameter accepts an array of objects, where each object represent
 ```json
 {
   "url": "https://example.com"
+}
+```
+
+#### Request with Link Processing
+```json
+{
+  "url": "https://example.com",
+  "max_level": 2,
+  "max_recursion_links": 10,
+  "link_exp_filter": "\\.(pdf|docx)$",
+  "format": "markdown"
 }
 ```
 
