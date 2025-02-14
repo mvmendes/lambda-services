@@ -47,10 +47,30 @@ try {
     }
     Copy-Item -Path "src/*" -Destination "package/src" -Recurse -Force
 
-    # Create ZIP file
-    Push-Location package
-    Compress-Archive -Path * -DestinationPath "../$LAMBDA_ZIP" -Force
-    Pop-Location
+    # Tenta usar 7-Zip se estiver instalado
+    $7zipPath = "C:\Program Files\7-Zip\7z.exe"
+    if (Test-Path $7zipPath) {
+        Write-Host "Usando 7-Zip para criar o arquivo..." -ForegroundColor Yellow
+        Push-Location package
+        & $7zipPath a -tzip "../$LAMBDA_ZIP" "*" -r
+        Pop-Location
+    }
+    # Alternativa usando System.IO.Compression
+    else {
+        Write-Host "Usando System.IO.Compression para criar o arquivo..." -ForegroundColor Yellow
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zipPath = Join-Path (Resolve-Path ".").Path $LAMBDA_ZIP
+        if (Test-Path -Path $zipPath) {
+            Write-Host "Arquivo zip existente encontrado. Excluindo o arquivo antigo..." -ForegroundColor Yellow
+            Remove-Item -Path $zipPath -Force
+        }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path "package").Path,
+            $zipPath,
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false
+        )
+    }
 }
 catch {
     Handle-Error "Failed to create deployment package: $_"

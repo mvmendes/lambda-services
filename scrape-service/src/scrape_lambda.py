@@ -3,22 +3,36 @@ import httpx
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import html2text
+import re
+from jsonpath_ng import parse
 
-def process_html(html_content, final_url):
-    """Processa o HTML e retorna título, resumo HTML e imagens"""
+def process_html(html_content, final_url, maxsize=2000):
+    """Processa o HTML e retorna título, resumo HTML, imagens e links"""
     soup = BeautifulSoup(html_content, 'html.parser')
     
     # Extração do título
     title = soup.title.string.strip() if soup.title and soup.title.string else "Sem Título"
     
     # Extração de parágrafos
-    paragraphs = soup.find_all('p')
+    elementos = soup.find_all([
+        'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 
+        'strong', 'span','a'
+    ])
+    paragraphs = []
+    ultimo_texto = None
+    for elemento in elementos:
+        texto_atual = elemento.get_text(strip=True)
+        if elemento.name == 'a':
+            texto_atual = f"[{elemento.get_text(strip=True)}]({elemento.get('href')})"
+        if texto_atual and texto_atual != ultimo_texto:
+            paragraphs.append(elemento)
+            ultimo_texto = texto_atual
     resumo_html = ""
     for p in paragraphs:
         text = p.get_text().strip()
         if text:
             resumo_html += f"<p>{text}</p>\n"
-        if len(resumo_html) > 200000:
+        if len(resumo_html) > maxsize:
             break
     if not resumo_html:
         resumo_html = "<p>Não foram encontrados textos significativos na página.</p>"
@@ -34,71 +48,95 @@ def process_html(html_content, final_url):
         if len(images) >= 5:
             break
             
-    return title, resumo_html, images
+    # Extração de links contidos nas tags <a>
+    links = []
+    for a in soup.find_all('a'):
+        href = a.get('href')
+        if href:
+            full_link = urljoin(final_url, href)
+            if full_link not in links:
+                links.append(full_link)
 
-def format_response(format_type, title, html_content, markdown_text, images, final_url, response_headers=None):
-    """Formata a resposta de acordo com o tipo solicitado"""
+    return title, resumo_html, images, links
+
+
+
+def extract_metadata(html_content):
+    """
+    Extrai os metadados do schema.org e dados do Next.js a partir do HTML.
+    """
+    soup = BeautifulSoup(html_content, 'html.parser')
     
-    if format_type == 'proxy':
-        return {
-            'statusCode': 200,
-            'headers': response_headers,
-            'body': html_content
-        }
-    
-    if format_type == 'html':
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'text/html',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': f"""
-                <html>
-                <head><title>{title}</title></head>
-                <body>
-                    <h1>{title}</h1>
-                    <p>Final URL: <a href="{final_url}">{final_url}</a></p>
-                    {html_content}
-                    <h2>Images:</h2>
-                    <div>{''.join(f'<img src="{img}" style="max-width:300px;margin:10px;" />' for img in images)}</div>
-                </body>
-                </html>
-            """
-        }
-    
-    if format_type == 'text':
-        return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'text/plain',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': markdown_text
-        }
-    
-    # Default: JSON
+    schema_data = {}
+    next_data = {}
+
+    # Extração dos dados do schema.org (JSON-LD)
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            # Use get_text() para obter o conteúdo mesmo se não for um nó de string simples
+            content = script.get_text(strip=True)
+            if content:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    for item in data:
+                        if item.get("@type", "").lower() == "product":
+                            schema_data = item
+                        elif item.get("@type", "").lower() == "breadcrumblist":
+                            schema_data["breadcrumb"] = item.get("itemListElement", [])
+                elif isinstance(data, dict):
+                    type_value = data.get("@type", "").lower()
+                    if type_value == "product":
+                        schema_data = data
+                    elif type_value == "breadcrumblist":
+                        schema_data["breadcrumb"] = data.get("itemListElement", [])
+        except Exception:
+            continue
+
+    # Extração dos dados do Next.js a partir da tag <script id="__NEXT_DATA__" type="application/json">
+    tag = soup.find("script", id="__NEXT_DATA__", type="application/json")
+    if tag and tag.string:
+        try:
+            next_data = json.loads(tag.string)
+        except Exception:
+            next_data = {}
+    else:
+        next_data = {}
+
     return {
-        'statusCode': 200,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-        },
-        'body': json.dumps({
-            "title": title,
-            "markdown": markdown_text,
-            "html": html_content,
-            "images": images,
-            "final_url": final_url
-        })
+        "schema": schema_data,
+        "nextData": next_data
     }
+
+def filter_next_data(next_data):
+    """
+    Filtra o nextData para retornar somente {"props": {"pageProps": ...}}
+    """
+    props = next_data.get("props", {})
+    return {"props": {"pageProps": props.get("pageProps", {})}}
+
+def apply_metadata_filters(next_data, filters):
+    """
+    Aplica filtros JSONPath ao next_data.
+    `filters` deve ser um array de expressões JSONPath.
+    Retorna um dicionário com cada query como chave e os dados extraídos como valor.
+    """
+    filtered = {}
+    for query in filters:
+        try:
+            jsonpath_expr = parse(query)
+            matches = [match.value for match in jsonpath_expr.find(next_data)]
+            filtered[query] = matches
+        except Exception as e:
+            filtered[query] = f"Error: {str(e)}"
+    return filtered
 
 def lambda_handler(event, context):
     try:
         # Parse do corpo da requisição
         body = json.loads(event.get('body', '{}'))
+        return_headers = body.get('output_headers', False)
         original_url = body.get('url')
-        format_type = body.get('format', 'html').lower()  # Formato padrão: html
+        format_type = body.get('format', 'metadata').lower()  # Formato padrão: metadata
         method = body.get('method', 'GET').upper()  # Método padrão: GET
         
         # Validação da URL
@@ -169,12 +207,15 @@ def lambda_handler(event, context):
                 # Caso haja erro na conversão, prossegue com processamento normal
                 pass
 
-        # Se for proxy, retorna o conteúdo original com headers
-        if format_type == 'proxy':
-            return format_response('proxy', None, html_content, None, None, final_url, dict(response.headers))
+ 
 
         # Processamento do conteúdo
-        title, resumo_html, images = process_html(html_content, final_url)
+        maxsize_param = int(body.get('maxsize', 300))  # Tamanho máximo do resumo (default: 300)
+        title, resumo_html, images, links = process_html(html_content, final_url, maxsize_param)
+        # Controle da extração de imagens a partir do parâmetro "images" na requisição (default: true)
+        respond_images = body.get('images', True)
+        if not respond_images:
+            images = []
 
         # Conversão para Markdown
         converter = html2text.HTML2Text()
@@ -182,8 +223,39 @@ def lambda_handler(event, context):
         markdown_text = converter.handle(resumo_html)
         markdown_full = f"# {title}\n\nFinal URL: [Link]({final_url})\n\n{markdown_text}"
 
-        # Retorna resposta formatada
-        return format_response(format_type, title, resumo_html, markdown_full, images, final_url)
+        # Extrai os metadados (schema e nextData)
+        metadata_data = extract_metadata(html_content)
+
+        # Verifica se foram passados filtros para os metadados; se não houver, não retorna nextData
+        filters = body.get('metadata_filters', None)
+        if filters and isinstance(filters, list):
+            next_data_value = apply_metadata_filters(metadata_data.get("nextData", {}), filters)
+        else:
+            next_data_value = None
+
+        # Estrutura a resposta combinada
+        data = {
+            "title": title, 
+            "images": images if (format_type == 'markdown' or format_type == 'html') and respond_images else None,
+            "resumo_html": resumo_html if format_type == 'html' else None, 
+            "final_url": final_url,
+            "metadata": metadata_data.get("schema", {}) if format_type == 'metadata' else None,
+            "nextData": next_data_value if format_type == 'metadata' else None,            
+            "markdown": markdown_full if format_type == 'markdown' else None,
+            "links": links if format_type == 'markdown' or format_type == 'html' else None,
+            "headers":   dict(response.headers) if return_headers else None
+        }
+
+
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            },
+            # Retorna todos os dados, incluindo metadata e nextData
+            'body': json.dumps(data)
+        }
         
     except Exception as e:
         return {

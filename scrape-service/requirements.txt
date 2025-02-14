@@ -1,3 +1,4 @@
 httpx
 beautifulsoup4
 html2text
+jsonpath_ng
