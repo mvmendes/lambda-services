@@ -6,3 +6,9 @@ PyPDF2
 python-docx
 docx2txt
 openpyxl
+responses
+pytest
+pytest-cov
+moto
+boto3
+respx

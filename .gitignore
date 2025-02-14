@@ -6,3 +6,7 @@ venv/
 venv-win/
 package/
 .specstory/*
+scrape-service/scrape_service.egg-info
+scrape-service/test/__pycache__
+scrape-service/src/__pycache__
+scrape-service/.coverage
