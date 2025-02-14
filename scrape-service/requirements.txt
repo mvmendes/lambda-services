@@ -2,3 +2,7 @@ httpx
 beautifulsoup4
 html2text
 jsonpath_ng
+PyPDF2
+python-docx
+docx2txt
+openpyxl

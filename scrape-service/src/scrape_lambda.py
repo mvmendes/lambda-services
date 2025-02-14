@@ -5,18 +5,41 @@ from urllib.parse import urljoin
 import html2text
 import re
 from jsonpath_ng import parse
+import io
+import PyPDF2
+import docx2txt
+from openpyxl import load_workbook
+import csv
+from io import StringIO
 
-def process_html(html_content, final_url, maxsize=2000):
-    """Processa o HTML e retorna título, resumo HTML, imagens e links"""
+def process_html(html_content, final_url, maxsize=2000, level=0, max_level=0, processed_urls=None,
+                 max_recursion_links=None, link_exp_filter=None, current_recursion_count=None):
+    """
+    Processa o HTML de forma recursiva até max_level
+    processed_urls: conjunto de URLs já processadas para evitar loops
+    max_recursion_links: número máximo de links para processar recursivamente
+    link_exp_filter: expressão regular para filtrar links
+    current_recursion_count: contador de links processados no nível atual
+    """
+    if processed_urls is None:
+        processed_urls = set()
+    if current_recursion_count is None:
+        current_recursion_count = {'count': 0}
+
+    if final_url in processed_urls:
+        return None, None, None, None
+
+    processed_urls.add(final_url)
+
     soup = BeautifulSoup(html_content, 'html.parser')
-    
+
     # Extração do título
     title = soup.title.string.strip() if soup.title and soup.title.string else "Sem Título"
-    
+
     # Extração de parágrafos
     elementos = soup.find_all([
-        'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 
-        'strong', 'span','a'
+        'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+        'strong', 'span', 'a'
     ])
     paragraphs = []
     ultimo_texto = None
@@ -27,6 +50,7 @@ def process_html(html_content, final_url, maxsize=2000):
         if texto_atual and texto_atual != ultimo_texto:
             paragraphs.append(elemento)
             ultimo_texto = texto_atual
+
     resumo_html = ""
     for p in paragraphs:
         text = p.get_text().strip()
@@ -47,26 +71,61 @@ def process_html(html_content, final_url, maxsize=2000):
                 images.append(full_src)
         if len(images) >= 5:
             break
-            
+
     # Extração de links contidos nas tags <a>
-    links = []
+    links = {} if max_level > 0 else []
     for a in soup.find_all('a'):
         href = a.get('href')
         if href:
             full_link = urljoin(final_url, href)
-            if full_link not in links:
-                links.append(full_link)
+            # Se não houver filtro ou o link passar pelo filtro
+            if not link_exp_filter or re.search(link_exp_filter, full_link):
+                if max_level > 0:
+                    if level < max_level and full_link not in processed_urls:
+                        if max_recursion_links is None or current_recursion_count['count'] < max_recursion_links:
+                            current_recursion_count['count'] += 1
+                            try:
+                                with httpx.Client(follow_redirects=True) as client:
+                                    response = client.get(full_link, timeout=10.0)
+                                    ctype = response.headers.get("content-type", "").lower()
+
+                                    # Processa documentos especiais
+                                    if any(doc_type in ctype for doc_type in ["pdf", "word", "excel", "spreadsheet"]):
+                                        content = process_document(response.content, ctype, format_type)
+                                        if content:
+                                            links[full_link] = {"content": content, "type": ctype}
+                                    # Processa HTML recursivamente
+                                    elif "html" in ctype:
+                                        sub_title, sub_html, sub_images, sub_links = process_html(
+                                            response.text, full_link, maxsize,
+                                            level + 1, max_level, processed_urls,
+                                            max_recursion_links, link_exp_filter, current_recursion_count
+                                        )
+                                        if sub_title:  # se processamento foi bem sucedido
+                                            links[full_link] = {
+                                                "title": sub_title,
+                                                "content": sub_html,
+                                                "images": sub_images,
+                                                "links": sub_links
+                                            }
+                            except Exception as e:
+                                links[full_link] = {"error": str(e)}
+                        else:
+                            links[full_link] = {"status": "max_recursion_links_reached"}
+                    else:
+                        links[full_link] = {"status": "max_level_reached"}
+                elif max_level == 0:
+                    if full_link not in links:
+                        links.append(full_link)
 
     return title, resumo_html, images, links
-
-
 
 def extract_metadata(html_content):
     """
     Extrai os metadados do schema.org e dados do Next.js a partir do HTML.
     """
     soup = BeautifulSoup(html_content, 'html.parser')
-    
+
     schema_data = {}
     next_data = {}
 
@@ -130,22 +189,90 @@ def apply_metadata_filters(next_data, filters):
             filtered[query] = f"Error: {str(e)}"
     return filtered
 
+def get_cors_headers():
+    """Retorna os headers padrão para CORS"""
+    return {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+        'Access-Control-Allow-Methods': 'OPTIONS,POST'
+    }
+
+def process_document(content, content_type, format_type='html'):
+    """Processa documentos PDF, DOCX e XLSX retornando texto/html"""
+    try:
+        if "application/pdf" in content_type:
+            pdf_file = io.BytesIO(content)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = "\n\n".join(page.extract_text() for page in pdf_reader.pages)
+            return f"<pre>{text}</pre>" if "html" in format_type else text
+
+        elif "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in content_type:
+            docx_file = io.BytesIO(content)
+            text = docx2txt.process(docx_file)
+            return f"<pre>{text}</pre>" if "html" in format_type else text
+
+        elif "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in content_type:
+            xlsx_file = io.BytesIO(content)
+            wb = load_workbook(xlsx_file, read_only=True)
+            output = []
+            for sheet in wb:
+                rows = sheet.values
+                header = next(rows)
+                for row in rows:
+                    output.append(dict(zip(header, row)))
+            if "html" in format_type:
+                html = ['<table border="1"><tr>']
+                if output:
+                    # Headers
+                    html.extend(f'<th>{k}</th>' for k in output[0].keys())
+                    html.append('</tr>')
+                    # Rows
+                    for row in output:
+                        html.append('<tr>')
+                        html.extend(f'<td>{v}</td>' for v in row.values())
+                        html.append('</tr>')
+                html.append('</table>')
+                return ''.join(html)
+            # Markdown table
+            if not output:
+                return "Empty spreadsheet"
+            md = []
+            headers = list(output[0].keys())
+            md.append('| ' + ' | '.join(headers) + ' |')
+            md.append('| ' + ' | '.join(['---'] * len(headers)) + ' |')
+            for row in output:
+                md.append('| ' + ' | '.join(str(row[h]) for h in headers) + ' |')
+            return '\n'.join(md)
+
+    except Exception as e:
+        return f"Error processing document: {str(e)}"
+
+    return None
+
 def lambda_handler(event, context):
     try:
+        # Se for uma requisição OPTIONS (preflight), retorna os headers CORS
+        if event.get('requestContext', {}).get('http', {}).get('method') == 'OPTIONS':
+            return {
+                'statusCode': 200,
+                'headers': get_cors_headers(),
+                'body': ''
+            }
+
         # Parse do corpo da requisição
         body = json.loads(event.get('body', '{}'))
         return_headers = body.get('output_headers', False)
         original_url = body.get('url')
         format_type = body.get('format', 'metadata').lower()  # Formato padrão: metadata
         method = body.get('method', 'GET').upper()  # Método padrão: GET
-        
+
         # Validação da URL
         if not original_url:
             return {
                 'statusCode': 400,
                 'body': json.dumps({'error': "Parâmetro 'url' não informado"})
             }
-            
+
         # Adiciona protocolo se necessário
         if not original_url.startswith(('http://', 'https://')):
             original_url = f'https://{original_url}'
@@ -176,10 +303,7 @@ def lambda_handler(event, context):
                 if format_type == 'json':
                     return {
                         'statusCode': 200,
-                        'headers': {
-                            'Content-Type': 'application/json',
-                            'Access-Control-Allow-Origin': '*'
-                        },
+                        'headers': {**get_cors_headers(), 'Content-Type': 'application/json'},
                         'body': json.dumps(data)
                     }
                 else:
@@ -188,30 +312,35 @@ def lambda_handler(event, context):
                         html_body = f"<pre>{pretty_json}</pre>"
                         return {
                             'statusCode': 200,
-                            'headers': {
-                                'Content-Type': 'text/html',
-                                'Access-Control-Allow-Origin': '*'
-                            },
+                            'headers': {**get_cors_headers(), 'Content-Type': 'text/html'},
                             'body': html_body
                         }
                     else:  # text
                         return {
                             'statusCode': 200,
-                            'headers': {
-                                'Content-Type': 'text/plain',
-                                'Access-Control-Allow-Origin': '*'
-                            },
+                            'headers': {**get_cors_headers(), 'Content-Type': 'text/plain'},
                             'body': pretty_json
                         }
             except Exception as json_err:
                 # Caso haja erro na conversão, prossegue com processamento normal
                 pass
 
- 
-
         # Processamento do conteúdo
-        maxsize_param = int(body.get('maxsize', 300))  # Tamanho máximo do resumo (default: 300)
-        title, resumo_html, images, links = process_html(html_content, final_url, maxsize_param)
+        maxsize_param = int(body.get('maxsize', 300))
+        max_level = int(body.get('max_level', 0))  # Níveis de recursão (default: 0)
+        max_recursion_links = body.get('max_recursion_links')  # Limite de links recursivos (default: None = sem limite)
+        link_exp_filter = body.get('link_exp_filter')  # Regex para filtrar links (default: None = sem filtro)
+
+        # Converte max_recursion_links para int se for string
+        if isinstance(max_recursion_links, str):
+            max_recursion_links = int(max_recursion_links)
+
+        title, resumo_html, images, links = process_html(
+            html_content, final_url, maxsize_param,
+            level=0, max_level=max_level,
+            max_recursion_links=max_recursion_links,
+            link_exp_filter=link_exp_filter
+        )
         # Controle da extração de imagens a partir do parâmetro "images" na requisição (default: true)
         respond_images = body.get('images', True)
         if not respond_images:
@@ -235,30 +364,26 @@ def lambda_handler(event, context):
 
         # Estrutura a resposta combinada
         data = {
-            "title": title, 
+            "title": title,
             "images": images if (format_type == 'markdown' or format_type == 'html') and respond_images else None,
-            "resumo_html": resumo_html if format_type == 'html' else None, 
+            "resumo_html": resumo_html if format_type == 'html' else None,
             "final_url": final_url,
             "metadata": metadata_data.get("schema", {}) if format_type == 'metadata' else None,
-            "nextData": next_data_value if format_type == 'metadata' else None,            
+            "nextData": next_data_value if format_type == 'metadata' else None,
             "markdown": markdown_full if format_type == 'markdown' else None,
             "links": links if format_type == 'markdown' or format_type == 'html' else None,
-            "headers":   dict(response.headers) if return_headers else None
+            "headers": dict(response.headers) if return_headers else None
         }
-
 
         return {
             'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            # Retorna todos os dados, incluindo metadata e nextData
+            'headers': {**get_cors_headers(), 'Content-Type': 'application/json'},
             'body': json.dumps(data)
         }
-        
+
     except Exception as e:
         return {
             'statusCode': 500,
+            'headers': get_cors_headers(),
             'body': json.dumps({'error': str(e)})
-        } 
+        }
